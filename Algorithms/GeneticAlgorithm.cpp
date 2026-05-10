@@ -2,6 +2,23 @@
 #include <algorithm>
 #include <cmath>
 
+// ============================================================
+// GENETIC ALGORITHM: Population-based evolutionary search
+//
+// Each individual is a binary chromosome where genes[i] = true
+// means "place candidate i on the grid".
+//
+// Pipeline per generation:
+//   1. Select parents via tournament selection
+//   2. Single-point crossover to create children
+//   3. Random bit-flip mutation
+//   4. Repair: greedily add scanners until all nodes covered
+//   5. Trim: remove any scanner that isn't needed
+//   6. Evaluate fitness (weight + penalty for uncovered nodes)
+//
+// Elitism: the best individual always survives to next generation.
+// ============================================================
+
 void GeneticAlgorithmImpl::Init(const GridState& grid, const ScannerDB& db)
 {
     m_Grid = &grid;
@@ -11,10 +28,10 @@ void GeneticAlgorithmImpl::Init(const GridState& grid, const ScannerDB& db)
     m_FoundSolution = false;
     m_Generation = 0;
     m_BestFitness = 1e18f;
-    m_BestIndividual.Clear();
+    m_BestPlacement.Clear();
     StartTimer();
 
-    // Pre-generate candidates with cached node coverage
+    // Generate all candidate placements that cover at least 1 node
     m_Candidates.clear();
     for (int t = 0; t < db.typeCount; ++t)
     {
@@ -34,11 +51,9 @@ void GeneticAlgorithmImpl::Init(const GridState& grid, const ScannerDB& db)
         }
     }
 
-    // Remove dominated candidates — dramatically shrinks chromosome length
-    RemoveDominatedCandidates();
-
     int n = (int)m_Candidates.size();
 
+    // Create random population with low inclusion rate
     float inclusionRate = std::min(0.15f, 10.0f / std::max(1, n));
 
     m_Population.resize(m_PopulationSize);
@@ -46,19 +61,18 @@ void GeneticAlgorithmImpl::Init(const GridState& grid, const ScannerDB& db)
     {
         ind.genes.resize(n);
         for (int i = 0; i < n; ++i)
-        {
             ind.genes[i] = (RandFloat() < inclusionRate);
-        }
-        Repair(ind);
-        EvaluateIndividual(ind);
+
+        Repair(ind);     // ensure all nodes are covered
+        Trim(ind);       // remove redundant scanners
+        Evaluate(ind);   // compute fitness
     }
 }
 
-// Fast evaluation using cached bitsets — avoids per-cell AddPlacement loop
-void GeneticAlgorithmImpl::EvaluateIndividual(Individual& ind) 
+// --- Evaluate: compute fitness from genes ---
+void GeneticAlgorithmImpl::Evaluate(Individual& ind)
 {
     std::bitset<Config::MAX_CELLS> covered;
-    covered.reset();
     int weight = 0;
 
     int n = (int)m_Candidates.size();
@@ -67,7 +81,7 @@ void GeneticAlgorithmImpl::EvaluateIndividual(Individual& ind)
         if (ind.genes[i])
         {
             covered |= m_Candidates[i].nodeCoverage;
-            weight  += m_DB->weights[m_Candidates[i].scannerType];
+            weight += m_DB->weights[m_Candidates[i].scannerType];
         }
     }
 
@@ -75,13 +89,115 @@ void GeneticAlgorithmImpl::EvaluateIndividual(Individual& ind)
     ind.coveredNodes = (int)(covered & m_Grid->nodeMask).count();
     ind.complete = (covered & m_Grid->nodeMask) == m_Grid->nodeMask;
 
+    // Fitness: lower is better. Heavy penalty for missing nodes.
     int uncovered = m_Grid->nodeCount - ind.coveredNodes;
-
-    // Fitness: lower is better. Heavy penalty for missing coverage.
-    ind.fitness = (float)ind.totalWeight + uncovered * 500.0f;
+    ind.fitness = (float)weight + uncovered * 500.0f;
 }
 
-PlacementState GeneticAlgorithmImpl::IndividualToPlacement(const Individual& ind)
+// --- Repair: greedily add candidates until all nodes covered ---
+void GeneticAlgorithmImpl::Repair(Individual& ind)
+{
+    std::bitset<Config::MAX_CELLS> covered;
+    int n = (int)m_Candidates.size();
+
+    // Compute current coverage
+    for (int i = 0; i < n; ++i)
+    {
+        if (ind.genes[i])
+            covered |= m_Candidates[i].nodeCoverage;
+    }
+
+    // Add candidates that cover the most new nodes
+    auto uncovered = m_Grid->nodeMask & ~covered;
+    while (uncovered.any())
+    {
+        int bestIdx = -1;
+        int bestNewCov = 0;
+
+        for (int i = 0; i < n; ++i)
+        {
+            if (ind.genes[i]) continue;
+            int newCov = (int)(m_Candidates[i].nodeCoverage & uncovered).count();
+            if (newCov > bestNewCov)
+            {
+                bestNewCov = newCov;
+                bestIdx = i;
+            }
+        }
+
+        if (bestIdx < 0) break;  // no candidate can help
+
+        ind.genes[bestIdx] = true;
+        covered |= m_Candidates[bestIdx].nodeCoverage;
+        uncovered = m_Grid->nodeMask & ~covered;
+    }
+}
+
+// --- Trim: remove scanners that aren't needed ---
+void GeneticAlgorithmImpl::Trim(Individual& ind)
+{
+    int n = (int)m_Candidates.size();
+
+    // Try removing each active gene; keep removal if coverage stays complete
+    for (int i = n - 1; i >= 0; --i)
+    {
+        if (!ind.genes[i]) continue;
+
+        // Compute coverage WITHOUT this candidate
+        std::bitset<Config::MAX_CELLS> covered;
+        for (int j = 0; j < n; ++j)
+        {
+            if (j != i && ind.genes[j])
+                covered |= m_Candidates[j].nodeCoverage;
+        }
+
+        // If still complete, this candidate is redundant
+        if ((covered & m_Grid->nodeMask) == m_Grid->nodeMask)
+            ind.genes[i] = false;
+    }
+}
+
+// --- Crossover: single-point crossover ---
+GeneticAlgorithmImpl::Individual GeneticAlgorithmImpl::Crossover(
+    const Individual& a, const Individual& b)
+{
+    Individual child;
+    int n = (int)a.genes.size();
+    child.genes.resize(n);
+
+    int point = std::rand() % n;  // random crossover point
+    for (int i = 0; i < n; ++i)
+        child.genes[i] = (i < point) ? a.genes[i] : b.genes[i];
+
+    return child;
+}
+
+// --- Mutate: random bit-flip ---
+void GeneticAlgorithmImpl::Mutate(Individual& ind)
+{
+    int n = (int)ind.genes.size();
+    for (int i = 0; i < n; ++i)
+    {
+        if (RandFloat() < Config::GA_MUTATION_RATE)
+            ind.genes[i] = !ind.genes[i];
+    }
+}
+
+// --- Tournament selection: pick 3 random, return best index ---
+int GeneticAlgorithmImpl::TournamentSelect()
+{
+    int a = std::rand() % m_PopulationSize;
+    int b = std::rand() % m_PopulationSize;
+    int c = std::rand() % m_PopulationSize;
+
+    int best = a;
+    if (m_Population[b].fitness < m_Population[best].fitness) best = b;
+    if (m_Population[c].fitness < m_Population[best].fitness) best = c;
+    return best;
+}
+
+// --- Convert individual to PlacementState for rendering ---
+PlacementState GeneticAlgorithmImpl::ToPlacement(const Individual& ind)
 {
     PlacementState ps;
     ps.Clear();
@@ -98,172 +214,59 @@ PlacementState GeneticAlgorithmImpl::IndividualToPlacement(const Individual& ind
     return ps;
 }
 
-GeneticAlgorithmImpl::Individual GeneticAlgorithmImpl::Crossover(const Individual& a, const Individual& b)
-{
-    Individual child;
-    int n = (int)a.genes.size();
-    child.genes.resize(n);
-
-    // Uniform crossover
-    for (int i = 0; i < n; ++i)
-    {
-        child.genes[i] = (RandFloat() < 0.5f) ? a.genes[i] : b.genes[i];
-    }
-    return child;
-}
-
-void GeneticAlgorithmImpl::Mutate(Individual& ind)
-{
-    int n = (int)ind.genes.size();
-    for (int i = 0; i < n; ++i)
-    {
-        if (RandFloat() < Config::GA_MUTATION_RATE)
-        {
-            ind.genes[i] = !ind.genes[i];
-        }
-    }
-}
-
-void GeneticAlgorithmImpl::Repair(Individual& ind)
-{
-    std::bitset<Config::MAX_CELLS> covered;
-    covered.reset();
-    int n = (int)m_Candidates.size();
-
-    for (int i = 0; i < n; ++i)
-    {
-        if (ind.genes[i])
-            covered |= m_Candidates[i].nodeCoverage;
-    }
-
-    auto uncovered = m_Grid->nodeMask & ~covered;
-    if (uncovered.none()) return;  // already complete
-
-    for (int i = 0; i < n; ++i)
-    {
-        if (ind.genes[i]) continue;  // already included
-
-        int newCov = (int)(m_Candidates[i].nodeCoverage & uncovered).count();
-        if (newCov > 0)
-        {
-            ind.genes[i] = true;
-            covered |= m_Candidates[i].nodeCoverage;
-            uncovered = m_Grid->nodeMask & ~covered;
-            if (uncovered.none()) break;
-        }
-    }
-}
-
-GeneticAlgorithmImpl::Individual& GeneticAlgorithmImpl::TournamentSelect()
-{
-    // Tournament of 3
-    int a = std::rand() % m_PopulationSize;
-    int b = std::rand() % m_PopulationSize;
-    int c = std::rand() % m_PopulationSize;
-
-    Individual* best = &m_Population[a];
-    if (m_Population[b].fitness < best->fitness) best = &m_Population[b];
-    if (m_Population[c].fitness < best->fitness) best = &m_Population[c];
-    return *best;
-}
-
-void GeneticAlgorithmImpl::RemoveDominatedCandidates()
-{
-    int n = (int)m_Candidates.size();
-    std::vector<bool> dominated(n, false);
-
-    for (int i = 0; i < n; ++i)
-    {
-        if (dominated[i]) continue;
-        for (int j = i + 1; j < n; ++j)
-        {
-            if (dominated[j]) continue;
-
-            int wi = m_DB->weights[m_Candidates[i].scannerType];
-            int wj = m_DB->weights[m_Candidates[j].scannerType];
-            const auto& ci = m_Candidates[i].nodeCoverage;
-            const auto& cj = m_Candidates[j].nodeCoverage;
-
-            if (wi <= wj && (cj & ~ci).none())
-            {
-                dominated[j] = true;
-            } 
-            else if (wj <= wi && (ci & ~cj).none())
-            {
-                dominated[i] = true;
-                break;
-            }
-        }
-    }
-
-    std::vector<CandidatePlacement> filtered;
-    filtered.reserve(n);
-    for (int i = 0; i < n; ++i)
-    {
-        if (!dominated[i])
-            filtered.push_back(m_Candidates[i]);
-    }
-    m_Candidates = std::move(filtered);
-}
-
+// --- One Step = One Generation ---
 AlgoStatus GeneticAlgorithmImpl::Step()
 {
     if (m_Status != AlgoStatus::Running) return m_Status;
     m_StepsExecuted++;
     m_Generation++;
 
-    // Evaluate and track best
+    // Track the best individual
     for (auto& ind : m_Population)
     {
         if (ind.fitness < m_BestFitness)
         {
             m_BestFitness = ind.fitness;
-            m_BestIndividual = IndividualToPlacement(ind);
-            if (ind.complete)
-            {
-                m_FoundSolution = true;
-            }
+            m_BestPlacement = ToPlacement(ind);
+            if (ind.complete) m_FoundSolution = true;
         }
     }
 
-    // Create new generation
+    // --- Create next generation ---
     std::vector<Individual> newPop;
     newPop.reserve(m_PopulationSize);
 
-    // Elitism: keep the best individual
+    // Elitism: keep the best individual unchanged
     auto bestIt = std::min_element(m_Population.begin(), m_Population.end(),
         [](const Individual& a, const Individual& b) {
             return a.fitness < b.fitness;
         });
     newPop.push_back(*bestIt);
 
+    // Fill the rest with offspring
     while ((int)newPop.size() < m_PopulationSize)
     {
-        Individual& p1 = TournamentSelect();
-        Individual& p2 = TournamentSelect();
+        int p1 = TournamentSelect();
+        int p2 = TournamentSelect();
 
         Individual child;
-        if (RandFloat() < Config::GA_CROSSOVER_RATE) 
-        {
-            child = Crossover(p1, p2);
-        }
+        if (RandFloat() < Config::GA_CROSSOVER_RATE)
+            child = Crossover(m_Population[p1], m_Population[p2]);
         else
-        {
-            child = (RandFloat() < 0.5f) ? p1 : p2;
-        }
+            child = (RandFloat() < 0.5f) ? m_Population[p1] : m_Population[p2];
 
         Mutate(child);
         Repair(child);
-        EvaluateIndividual(child);
+        Trim(child);
+        Evaluate(child);
         newPop.push_back(child);
     }
 
     m_Population = std::move(newPop);
 
+    // Stop after max generations
     if (m_Generation >= m_MaxGenerations)
-    {
         m_Status = AlgoStatus::Finished;
-    }
 
     UpdateTimer();
     return m_Status;

@@ -19,7 +19,6 @@ enum class AlgorithmType
     Greedy = 0,
     Backtracking,
     BranchAndBound,
-    SimulatedAnnealing,
     GeneticAlgorithm,
     COUNT
 };

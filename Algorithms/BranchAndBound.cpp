@@ -2,6 +2,19 @@
 #include <climits>
 #include <algorithm>
 
+// ============================================================
+// BRANCH AND BOUND: DFS with a lower-bound cost estimate
+//
+// Same include/skip branching as Backtracking, but smarter:
+//   - Estimates the MINIMUM additional cost to cover remaining nodes
+//   - Prunes if (current cost + lower bound) >= best known cost
+//   - This cuts far more branches than simple cost pruning alone
+//
+// Lower bound idea:
+//   We need at least ceil(uncovered / maxCoverage) more scanners,
+//   each costing at least the cheapest scanner weight.
+// ============================================================
+
 void BranchAndBoundAlgorithm::Init(const GridState& grid, const ScannerDB& db)
 {
     m_Grid = &grid;
@@ -15,7 +28,7 @@ void BranchAndBoundAlgorithm::Init(const GridState& grid, const ScannerDB& db)
     m_FoundSolution = false;
     StartTimer();
 
-    // Pre-generate candidates (only those covering >= 1 node)
+    // Generate all candidate placements that cover at least 1 node
     m_Candidates.clear();
     for (int t = 0; t < db.typeCount; ++t)
     {
@@ -35,19 +48,15 @@ void BranchAndBoundAlgorithm::Init(const GridState& grid, const ScannerDB& db)
         }
     }
 
-    // Sort by efficiency
-    std::sort(m_Candidates.begin(), m_Candidates.end(), [&](const CandidatePlacement& a, const CandidatePlacement& b) {
+    // Sort by efficiency: low (weight / coverage) first
+    std::sort(m_Candidates.begin(), m_Candidates.end(),
+        [&](const Candidate& a, const Candidate& b) {
             float ra = (float)db.weights[a.scannerType] / a.nodeCoverage.count();
             float rb = (float)db.weights[b.scannerType] / b.nodeCoverage.count();
             return ra < rb;
         });
 
-    // Remove dominated candidates to shrink the search space
-    RemoveDominatedCandidates();
-
-    PrecomputeSuffixCoverage();
-
-    // Push initial state
+    // Push initial DFS node
     while (!m_Stack.empty()) m_Stack.pop();
     DFSNode root;
     root.state.Clear();
@@ -55,113 +64,38 @@ void BranchAndBoundAlgorithm::Init(const GridState& grid, const ScannerDB& db)
     m_Stack.push(root);
 }
 
-// ---- Optimization helpers ----
-
-void BranchAndBoundAlgorithm::PrecomputeSuffixCoverage()
-{
-    int n = (int)m_Candidates.size();
-    m_SuffixCoverage.resize(n + 1);
-    m_SuffixCoverage[n].reset();
-
-    for (int i = n - 1; i >= 0; --i)
-    {
-        m_SuffixCoverage[i] = m_SuffixCoverage[i + 1] | m_Candidates[i].nodeCoverage;
-    }
-}
-
-bool BranchAndBoundAlgorithm::CanCoverRemaining(const PlacementState& state, int fromIdx) const
-{
-    // Check if remaining candidates can cover all uncovered nodes
-    auto uncovered = m_Grid->nodeMask & ~state.coveredMask;
-    auto reachable = m_SuffixCoverage[fromIdx];
-    return (uncovered & ~reachable).none();
-}
-
-// LP-dual lower bound: for each uncovered node, find the cheapest
-// efficiency ratio among remaining candidates covering it.
-// The sum is a valid lower bound on the additional cost.
-int BranchAndBoundAlgorithm::EstimateLowerBound(const PlacementState& state, int fromIdx) const
+// Simple lower bound: minimum scanners needed * cheapest scanner weight
+int BranchAndBoundAlgorithm::EstimateLowerBound(const PlacementState& state) const
 {
     auto uncovered = m_Grid->nodeMask & ~state.coveredMask;
-    if (uncovered.none()) return 0;
+    int uncoveredCount = (int)uncovered.count();
+    if (uncoveredCount == 0) return 0;
 
-    int n = (int)m_Candidates.size();
-    int totalCells = m_Grid->rows * m_Grid->cols;
-
-    // Precompute the efficiency ratio for each remaining candidate
-    std::vector<float> ratios(n, (float)INT_MAX);
-    for (int j = fromIdx; j < n; ++j)
+    // Find the max coverage and min weight among all candidates
+    int maxCov = 1;
+    int minWeight = INT_MAX;
+    for (const auto& c : m_Candidates)
     {
-        int newCov = (int)(m_Candidates[j].nodeCoverage & uncovered).count();
-        if (newCov > 0)
-            ratios[j] = (float)m_DB->weights[m_Candidates[j].scannerType] / newCov;
+        int cov = (int)(c.nodeCoverage & uncovered).count();
+        if (cov > maxCov) maxCov = cov;
+
+        int w = m_DB->weights[c.scannerType];
+        if (w < minWeight) minWeight = w;
     }
 
-    float lb = 0.0f;
-    for (int i = 0; i < totalCells; ++i)
-    {
-        if (!uncovered.test(i)) continue;
+    if (minWeight == INT_MAX) return INT_MAX;
 
-        float bestRatio = (float)INT_MAX;
-        for (int j = fromIdx; j < n; ++j)
-        {
-            if (ratios[j] >= bestRatio) continue;
-            if (m_Candidates[j].nodeCoverage.test(i))
-                bestRatio = ratios[j];
-        }
-        lb += bestRatio;
-    }
-
-    return (int)lb;
+    // At minimum we need ceil(uncovered / maxCov) more scanners
+    int minScanners = (uncoveredCount + maxCov - 1) / maxCov;
+    return minScanners * minWeight;
 }
-
-void BranchAndBoundAlgorithm::RemoveDominatedCandidates()
-{
-    int n = (int)m_Candidates.size();
-    std::vector<bool> dominated(n, false);
-
-    for (int i = 0; i < n; ++i)
-    {
-        if (dominated[i]) continue;
-        for (int j = i + 1; j < n; ++j)
-        {
-            if (dominated[j]) continue;
-
-            int wi = m_DB->weights[m_Candidates[i].scannerType];
-            int wj = m_DB->weights[m_Candidates[j].scannerType];
-            const auto& ci = m_Candidates[i].nodeCoverage;
-            const auto& cj = m_Candidates[j].nodeCoverage;
-
-            if (wi <= wj && (cj & ~ci).none())
-            {
-                dominated[j] = true;
-            }
-            else if
-                (wj <= wi && (ci & ~cj).none())
-            {
-                dominated[i] = true;
-                break;
-            }
-        }
-    }
-
-    std::vector<CandidatePlacement> filtered;
-    filtered.reserve(n);
-    for (int i = 0; i < n; ++i)
-    {
-        if (!dominated[i])
-            filtered.push_back(m_Candidates[i]);
-    }
-    m_Candidates = std::move(filtered);
-}
-
-// ---- Main step logic ----
 
 AlgoStatus BranchAndBoundAlgorithm::Step()
 {
     if (m_Status != AlgoStatus::Running) return m_Status;
     m_StepsExecuted++;
 
+    // If stack is empty, search is complete
     if (m_Stack.empty())
     {
         m_Status = AlgoStatus::Finished;
@@ -169,12 +103,12 @@ AlgoStatus BranchAndBoundAlgorithm::Step()
         return m_Status;
     }
 
+    // Pop next node
     DFSNode node = m_Stack.top();
     m_Stack.pop();
-
     m_Current = node.state;
 
-    // Complete solution check
+    // --- Check: complete solution? ---
     if (node.state.IsComplete(*m_Grid))
     {
         if (node.state.totalWeight < m_BestWeight)
@@ -187,25 +121,25 @@ AlgoStatus BranchAndBoundAlgorithm::Step()
         return AlgoStatus::Running;
     }
 
-    // Past all candidates
+    // --- Check: out of candidates? ---
     if (node.candidateIdx >= (int)m_Candidates.size())
     {
         UpdateTimer();
         return AlgoStatus::Running;
     }
 
-    // PRUNE: coverage bound — can remaining candidates even cover what's left?
-    if (!CanCoverRemaining(node.state, node.candidateIdx))
+    // --- Prune: cost bound (simple) ---
+    if (m_FoundSolution && node.state.totalWeight >= m_BestWeight)
     {
         m_PrunedCount++;
         UpdateTimer();
         return AlgoStatus::Running;
     }
 
-    // PRUNE: LP-dual lower bound — is it even possible to beat the best?
+    // --- Prune: cost + lower bound (the B&B advantage) ---
     if (m_FoundSolution)
     {
-        int lb = EstimateLowerBound(node.state, node.candidateIdx);
+        int lb = EstimateLowerBound(node.state);
         if (node.state.totalWeight + lb >= m_BestWeight)
         {
             m_PrunedCount++;
@@ -214,24 +148,25 @@ AlgoStatus BranchAndBoundAlgorithm::Step()
         }
     }
 
+    // --- Branch 1: SKIP this candidate ---
     DFSNode skipNode;
     skipNode.state = node.state;
     skipNode.candidateIdx = node.candidateIdx + 1;
     m_Stack.push(skipNode);
 
-    // Branch: INCLUDE this candidate
+    // --- Branch 2: INCLUDE this candidate ---
     const auto& cand = m_Candidates[node.candidateIdx];
+    bool coversNew = (cand.nodeCoverage & ~node.state.coveredMask).any();
 
-    // Only consider including if it covers at least one NEW node
-    if ((cand.nodeCoverage & ~node.state.coveredMask).any())
+    if (coversNew)
     {
         DFSNode includeNode;
         includeNode.state = node.state;
-        includeNode.state.AddPlacement(*m_Grid, *m_DB, { cand.scannerType, cand.row, cand.col });
+        includeNode.state.AddPlacement(*m_Grid, *m_DB,
+            { cand.scannerType, cand.row, cand.col });
         includeNode.candidateIdx = node.candidateIdx + 1;
 
-        // PRUNE: cost bound
-        if (includeNode.state.totalWeight < m_BestWeight)
+        if (!m_FoundSolution || includeNode.state.totalWeight < m_BestWeight)
         {
             m_Stack.push(includeNode);
         }
@@ -239,10 +174,6 @@ AlgoStatus BranchAndBoundAlgorithm::Step()
         {
             m_PrunedCount++;
         }
-    }
-    else
-    {
-        m_PrunedCount++;
     }
 
     UpdateTimer();

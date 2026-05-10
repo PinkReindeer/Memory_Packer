@@ -19,32 +19,28 @@ public:
     int GetPrunedCount() const { return m_PrunedCount; }
 
 private:
+    // A candidate = one possible scanner placement
+    struct Candidate
+    {
+        int scannerType;
+        int row, col;
+        std::bitset<Config::MAX_CELLS> nodeCoverage;
+    };
+
+    // A DFS node = search state snapshot
     struct DFSNode
     {
         PlacementState state;
         int candidateIdx;
     };
 
-    struct CandidatePlacement
-    {
-        int scannerType;
-        int row, col;
-        std::bitset<Config::MAX_CELLS> nodeCoverage;  // which nodes this covers
-    };
-
-    std::vector<CandidatePlacement> m_Candidates;
-
-    // Union of all candidate coverages from index i onward
-    std::vector<std::bitset<Config::MAX_CELLS>> m_SuffixCoverage;
-
+    std::vector<Candidate> m_Candidates;
     std::stack<DFSNode> m_Stack;
     PlacementState m_Current;
     PlacementState m_Best;
     int m_BestWeight = INT_MAX;
     int m_PrunedCount = 0;
 
-    void PrecomputeSuffixCoverage();
-    bool CanCoverRemaining(const PlacementState& state, int fromIdx) const;
-    int  EstimateLowerBound(const PlacementState& state, int fromIdx) const;
-    void RemoveDominatedCandidates();
+    // Simple lower bound on remaining cost
+    int EstimateLowerBound(const PlacementState& state) const;
 };
