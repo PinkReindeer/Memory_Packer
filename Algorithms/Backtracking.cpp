@@ -108,8 +108,7 @@ AlgoStatus BacktrackingAlgorithm::Step()
     {
         DFSNode includeNode;
         includeNode.state = node.state;
-        includeNode.state.AddPlacement(*m_Grid, *m_DB,
-            { cand.scannerType, cand.row, cand.col });
+        includeNode.state.AddPlacement(*m_Grid, *m_DB, { cand.scannerType, cand.row, cand.col });
         includeNode.candidateIdx = node.candidateIdx + 1;
 
         // Only push if the new cost could still beat the best

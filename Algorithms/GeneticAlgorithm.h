@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <bitset>
 #include <cstdlib>
 
 #include "AlgorithmBase.h"
@@ -19,10 +20,14 @@ public:
     int GetGeneration() const { return m_Generation; }
 
 private:
+    // Max candidates we support (generous upper bound)
+    static constexpr int MAX_CANDIDATES = 2048;
+
     // Each individual = a selection of candidates (on/off per candidate)
     struct Individual
     {
-        std::vector<bool> genes;   // genes[i] = true means candidate i is placed
+        std::bitset<MAX_CANDIDATES> genes; // compact fixed-size bitset
+        std::bitset<Config::MAX_CELLS> coverage; // cached node coverage
         int totalWeight = 0;
         int coveredNodes = 0;
         bool complete = false;     // true if all nodes covered
@@ -44,8 +49,10 @@ private:
     int m_Generation = 0;
     int m_MaxGenerations = Config::GA_MAX_GENERATIONS;
     int m_PopulationSize = Config::GA_POPULATION_SIZE;
+    int m_CandidateCount = 0;             // actual number of candidates
 
     // GA operators
+    void RebuildCoverage(Individual& ind); // recompute coverage from genes
     void Evaluate(Individual& ind);
     void Repair(Individual& ind);
     void Trim(Individual& ind);

@@ -1,8 +1,6 @@
 #include "Application.h"
 #include "Core/GameConfig.h"
 
-#include <iostream>
-
 int main()
 {
 	ApplicationSpecification appSpec;

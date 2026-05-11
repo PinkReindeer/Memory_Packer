@@ -31,8 +31,8 @@ namespace Config
     constexpr float SA_INITIAL_TEMP       = 1000.0f;
     constexpr float SA_COOLING_RATE       = 0.995f;
     constexpr float SA_MIN_TEMP           = 0.01f;
-    constexpr int   GA_POPULATION_SIZE    = 50;
-    constexpr int   GA_MAX_GENERATIONS    = 500;
+    constexpr int   GA_POPULATION_SIZE    = 30;
+    constexpr int   GA_MAX_GENERATIONS    = 200;
     constexpr float GA_MUTATION_RATE      = 0.1f;
     constexpr float GA_CROSSOVER_RATE     = 0.7f;
 

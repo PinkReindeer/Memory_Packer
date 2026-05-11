@@ -1,19 +1,7 @@
-#include "BranchAndBound.h"
 #include <climits>
 #include <algorithm>
 
-// ============================================================
-// BRANCH AND BOUND: DFS with a lower-bound cost estimate
-//
-// Same include/skip branching as Backtracking, but smarter:
-//   - Estimates the MINIMUM additional cost to cover remaining nodes
-//   - Prunes if (current cost + lower bound) >= best known cost
-//   - This cuts far more branches than simple cost pruning alone
-//
-// Lower bound idea:
-//   We need at least ceil(uncovered / maxCoverage) more scanners,
-//   each costing at least the cheapest scanner weight.
-// ============================================================
+#include "BranchAndBound.h"
 
 void BranchAndBoundAlgorithm::Init(const GridState& grid, const ScannerDB& db)
 {
