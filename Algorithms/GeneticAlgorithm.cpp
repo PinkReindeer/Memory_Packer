@@ -129,33 +129,27 @@ void GeneticAlgorithmImpl::Trim(Individual& ind)
     {
         if (!ind.genes.test(i)) continue;
 
-        auto coverageWithout = ind.coverage & ~m_Candidates[i].nodeCoverage;
-        auto candidateNodes = m_Candidates[i].nodeCoverage & m_Grid->nodeMask;
-        auto nodesOnlyFromThis = candidateNodes & ~coverageWithout;
+        // Temporarily remove this candidate
+        ind.genes.reset(i);
 
-        if (nodesOnlyFromThis.none())
+        // Rebuild coverage without it
+        std::bitset<Config::MAX_CELLS> rebuilt;
+        for (int j = 0; j < m_CandidateCount; ++j)
         {
-            ind.genes.reset(i);
-
-            std::bitset<Config::MAX_CELLS> rebuilt;
-            for (int j = 0; j < m_CandidateCount; ++j)
-            {
-                if (ind.genes.test(j))
-                    rebuilt |= m_Candidates[j].nodeCoverage;
-            }
-
-            if ((rebuilt & m_Grid->nodeMask) == m_Grid->nodeMask)
-            {
-                // Redundant — keep it removed, update cached coverage
-                ind.coverage = rebuilt;
-            }
-            else
-            {
-                // Not redundant — restore
-                ind.genes.set(i);
-            }
+            if (ind.genes.test(j))
+                rebuilt |= m_Candidates[j].nodeCoverage;
         }
-        // else: clearly not redundant, skip
+
+        if ((rebuilt & m_Grid->nodeMask) == m_Grid->nodeMask)
+        {
+            // Still complete — keep it removed, update cached coverage
+            ind.coverage = rebuilt;
+        }
+        else
+        {
+            // Not redundant — restore
+            ind.genes.set(i);
+        }
     }
 }
 
@@ -165,6 +159,8 @@ GeneticAlgorithmImpl::Individual GeneticAlgorithmImpl::Crossover(
 {
     Individual child;
     child.genes.reset();
+
+    if (m_CandidateCount == 0) { RebuildCoverage(child); return child; }
 
     int point = std::rand() % m_CandidateCount;  // random crossover point
     for (int i = 0; i < m_CandidateCount; ++i)
@@ -225,17 +221,6 @@ AlgoStatus GeneticAlgorithmImpl::Step()
     m_StepsExecuted++;
     m_Generation++;
 
-    // Track the best individual
-    for (auto& ind : m_Population)
-    {
-        if (ind.fitness < m_BestFitness)
-        {
-            m_BestFitness = ind.fitness;
-            m_BestPlacement = ToPlacement(ind);
-            if (ind.complete) m_FoundSolution = true;
-        }
-    }
-
     // --- Create next generation ---
     std::vector<Individual> newPop;
     newPop.reserve(m_PopulationSize);
@@ -268,6 +253,17 @@ AlgoStatus GeneticAlgorithmImpl::Step()
     }
 
     m_Population = std::move(newPop);
+
+    // Track the best individual from the new generation
+    for (auto& ind : m_Population)
+    {
+        if (ind.fitness < m_BestFitness)
+        {
+            m_BestFitness = ind.fitness;
+            m_BestPlacement = ToPlacement(ind);
+            if (ind.complete) m_FoundSolution = true;
+        }
+    }
 
     // Stop after max generations
     if (m_Generation >= m_MaxGenerations)
