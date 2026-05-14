@@ -52,13 +52,15 @@ set(GAME_SOURCES
     Game/Game.cpp
 )
 
-set(RENDERING_SOURCES
-    Rendering/GridRenderer.h
-    Rendering/GridRenderer.cpp
-    Rendering/ChartWidget.h
-    Rendering/ChartWidget.cpp
-    Rendering/UIPanel.h
-    Rendering/UIPanel.cpp
+set(RENDERER_SOURCES
+    Renderer/GridRenderer.h
+    Renderer/GridRenderer.cpp
+    Renderer/ChartWidget.h
+    Renderer/ChartWidget.cpp
+    Renderer/UIPanel.h
+    Renderer/UIPanel.cpp
+    Renderer/Renderer.h
+    Renderer/Renderer.cpp
 )
 
 add_executable(${PROJECT_NAME}
@@ -68,7 +70,13 @@ add_executable(${PROJECT_NAME}
     ${CORE_SOURCES}
     ${ALGORITHM_SOURCES}
     ${GAME_SOURCES}
-    ${RENDERING_SOURCES}
+    ${RENDERER_SOURCES}
+)
+
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/Assets"
+        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/Assets"
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -80,4 +88,4 @@ target_precompile_headers(${PROJECT_NAME} PUBLIC gpch.h)
 source_group("Core"       FILES ${CORE_SOURCES})
 source_group("Algorithms" FILES ${ALGORITHM_SOURCES})
 source_group("Game"       FILES ${GAME_SOURCES})
-source_group("Rendering"  FILES ${RENDERING_SOURCES})
+source_group("Renderer"  FILES ${RENDERER_SOURCES})

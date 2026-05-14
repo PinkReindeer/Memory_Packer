@@ -7,8 +7,8 @@
 #include "../Core/ScannerDB.h"
 #include "../Core/PlacementState.h"
 #include "../Algorithms/AlgorithmBase.h"
-#include "../Rendering/GridRenderer.h"
-#include "../Rendering/UIPanel.h"
+#include "../Renderer/GridRenderer.h"
+#include "../Renderer/UIPanel.h"
 
 class Game
 {
